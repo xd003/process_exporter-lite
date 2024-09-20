@@ -5,7 +5,7 @@ FROM golang:1.20-alpine AS builder
 WORKDIR /app
 
 # Run go mod init
-go mod init process-exporter-lite
+RUN go mod init process-exporter-lite
 
 # Run go mod tidy to ensure dependencies are correct
 RUN go mod tidy
