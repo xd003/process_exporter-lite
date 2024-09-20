@@ -4,14 +4,14 @@ FROM golang:1.20-alpine AS builder
 # Set the working directory
 WORKDIR /app
 
-# Run go mod init
-RUN go mod init process-exporter-lite
-
-# Run go mod tidy to ensure dependencies are correct
-RUN go mod tidy
-
 # Copy the source code into the container
 COPY . .
+
+# Initialize the Go module
+RUN go mod init process-exporter-lite
+
+# Ensure dependencies are correct
+RUN go mod tidy
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o metrics .
