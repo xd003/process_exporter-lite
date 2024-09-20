@@ -4,11 +4,11 @@ FROM golang:1.20-alpine AS builder
 # Set the working directory
 WORKDIR /app
 
+# Run go mod init
+go mod init process-exporter-lite
+
 # Run go mod tidy to ensure dependencies are correct
 RUN go mod tidy
-
-# Download all dependencies
-RUN go mod download
 
 # Copy the source code into the container
 COPY . .
