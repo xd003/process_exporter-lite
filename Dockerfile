@@ -4,9 +4,6 @@ FROM golang:1.20-alpine AS builder
 # Set the working directory
 WORKDIR /app
 
-# Copy go mod and sum files
-COPY go.mod go.sum ./
-
 # Run go mod tidy to ensure dependencies are correct
 RUN go mod tidy
 
