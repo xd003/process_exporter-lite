@@ -4,7 +4,7 @@
 ```
 services:
   process-exporter-lite:
-    image: image: ghcr.io/xd003/process-exporter-lite:latest
+    image: ghcr.io/xd003/process-exporter-lite:latest
     container_name: process-exporter-lite
     restart: unless-stopped
     environment:
