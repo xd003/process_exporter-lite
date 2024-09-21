@@ -18,8 +18,8 @@ import (
 const (
 	updateInterval = 15 * time.Second
 	listenAddr     = ":7000"
-	procMount      = "/host/proc"
-	sysMount       = "/host/sys"
+	hostProcPath   = "/host/proc"
+	hostSysPath    = "/host/sys"
 )
 
 var (
@@ -59,9 +59,9 @@ func updateMetrics() {
 }
 
 func collectMetrics() (string, error) {
-	pids, err := getActivePIDs()
+	pids, err := getHostPIDs()
 	if err != nil {
-		return "", fmt.Errorf("error getting active PIDs: %v", err)
+		return "", fmt.Errorf("error getting host PIDs: %v", err)
 	}
 
 	var sb strings.Builder
@@ -92,8 +92,8 @@ func collectMetrics() (string, error) {
 	return sb.String(), nil
 }
 
-func getActivePIDs() ([]int32, error) {
-	files, err := ioutil.ReadDir(procMount)
+func getHostPIDs() ([]int32, error) {
+	files, err := ioutil.ReadDir(hostProcPath)
 	if err != nil {
 		return nil, err
 	}
@@ -110,35 +110,24 @@ func getActivePIDs() ([]int32, error) {
 }
 
 func collectProcessMetrics(pid int32) (string, error) {
-	p, err := getOrCreateProcess(pid)
+	cmdline, err := readHostProcFile(pid, "cmdline")
 	if err != nil {
 		return "", err
 	}
 
-	name, err := p.Name()
+	cmd, args := parseCommand(cmdline)
+
+	cpu, err := readHostProcStat(pid)
 	if err != nil {
 		return "", err
 	}
 
-	cmdline, err := p.Cmdline()
-	if err != nil || cmdline == "" {
-		cmdline = name
-	}
-
-	cmd := filepath.Base(strings.Fields(cmdline)[0])
-	args := strings.Join(strings.Fields(cmdline)[1:], " ")
-
-	cpu, err := p.CPUPercent()
+	mem, err := readHostProcStatus(pid)
 	if err != nil {
 		return "", err
 	}
 
-	mem, err := p.MemoryInfo()
-	if err != nil {
-		return "", err
-	}
-
-	ioCounters, err := p.IOCounters()
+	ioCounters, err := readHostProcIO(pid)
 	if err != nil {
 		return "", err
 	}
@@ -152,7 +141,7 @@ func collectProcessMetrics(pid int32) (string, error) {
 	sb.Grow(500)
 
 	fmt.Fprintf(&sb, "process_cpu_usage{pid=\"%d\",command=\"%s\",args=\"%s\"} %.2f\n", pid, cmd, args, cpu)
-	fmt.Fprintf(&sb, "process_memory_usage{pid=\"%d\",command=\"%s\",args=\"%s\"} %d\n", pid, cmd, args, mem.RSS)
+	fmt.Fprintf(&sb, "process_memory_usage{pid=\"%d\",command=\"%s\",args=\"%s\"} %d\n", pid, cmd, args, mem)
 	fmt.Fprintf(&sb, "process_network_receive_bytes{pid=\"%d\",command=\"%s\",args=\"%s\"} %d\n", pid, cmd, args, recv)
 	fmt.Fprintf(&sb, "process_network_transmit_bytes{pid=\"%d\",command=\"%s\",args=\"%s\"} %d\n", pid, cmd, args, trans)
 	fmt.Fprintf(&sb, "process_disk_read_bytes{pid=\"%d\",command=\"%s\",args=\"%s\"} %d\n", pid, cmd, args, ioCounters.ReadBytes)
@@ -161,35 +150,90 @@ func collectProcessMetrics(pid int32) (string, error) {
 	return sb.String(), nil
 }
 
-func getOrCreateProcess(pid int32) (*process.Process, error) {
-	pidCacheMutex.RLock()
-	p, exists := pidCache[pid]
-	pidCacheMutex.RUnlock()
-
-	if exists {
-		return p, nil
+func readHostProcFile(pid int32, file string) (string, error) {
+	content, err := ioutil.ReadFile(fmt.Sprintf("%s/%d/%s", hostProcPath, pid, file))
+	if err != nil {
+		return "", err
 	}
+	return strings.TrimSpace(string(content)), nil
+}
 
-	p, err := process.NewProcess(pid)
+func parseCommand(cmdline string) (string, string) {
+	parts := strings.Split(cmdline, "\x00")
+	if len(parts) == 0 {
+		return "", ""
+	}
+	cmd := filepath.Base(parts[0])
+	args := strings.Join(parts[1:], " ")
+	return cmd, args
+}
+
+func readHostProcStat(pid int32) (float64, error) {
+	content, err := readHostProcFile(pid, "stat")
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(content)
+	if len(fields) < 14 {
+		return 0, fmt.Errorf("invalid stat file for pid %d", pid)
+	}
+	utime, _ := strconv.ParseFloat(fields[13], 64)
+	stime, _ := strconv.ParseFloat(fields[14], 64)
+	return (utime + stime) / 100.0, nil
+}
+
+func readHostProcStatus(pid int32) (uint64, error) {
+	content, err := readHostProcFile(pid, "status")
+	if err != nil {
+		return 0, err
+	}
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "VmRSS:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				rss, err := strconv.ParseUint(fields[1], 10, 64)
+				if err != nil {
+					return 0, err
+				}
+				return rss * 1024, nil // Convert from KB to bytes
+			}
+		}
+	}
+	return 0, fmt.Errorf("VmRSS not found in status for pid %d", pid)
+}
+
+func readHostProcIO(pid int32) (*process.IOCountersStat, error) {
+	content, err := readHostProcFile(pid, "io")
 	if err != nil {
 		return nil, err
 	}
-
-	pidCacheMutex.Lock()
-	pidCache[pid] = p
-	pidCacheMutex.Unlock()
-
-	return p, nil
+	lines := strings.Split(content, "\n")
+	counters := &process.IOCountersStat{}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "read_bytes:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				counters.ReadBytes, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		} else if strings.HasPrefix(line, "write_bytes:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				counters.WriteBytes, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		}
+	}
+	return counters, nil
 }
 
 func getNetworkIO(pid int32) (uint64, uint64, error) {
-	content, err := os.ReadFile(fmt.Sprintf("%s/%d/net/dev", procMount, pid))
+	content, err := readHostProcFile(pid, "net/dev")
 	if err != nil {
 		return 0, 0, err
 	}
 
 	var recvBytes, transBytes uint64
-	lines := strings.Split(string(content), "\n")
+	lines := strings.Split(content, "\n")
 	for i := 2; i < len(lines); i++ {
 		fields := strings.Fields(lines[i])
 		if len(fields) < 17 {
