@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/shirou/gopsutil/v3/process"
 )
 
 const (
@@ -25,12 +23,12 @@ const (
 var (
 	metrics       strings.Builder
 	metricsMutex  sync.RWMutex
-	pidCache      map[int32]*process.Process
+	pidCache      map[int32]struct{}
 	pidCacheMutex sync.RWMutex
 )
 
 func main() {
-	pidCache = make(map[int32]*process.Process)
+	pidCache = make(map[int32]struct{})
 	go updateMetrics()
 	http.HandleFunc("/metrics", serveMetrics)
 	log.Fatal(http.ListenAndServe(listenAddr, nil))
@@ -203,13 +201,18 @@ func readHostProcStatus(pid int32) (uint64, error) {
 	return 0, fmt.Errorf("VmRSS not found in status for pid %d", pid)
 }
 
-func readHostProcIO(pid int32) (*process.IOCountersStat, error) {
+type IOCountersStat struct {
+	ReadBytes  uint64
+	WriteBytes uint64
+}
+
+func readHostProcIO(pid int32) (*IOCountersStat, error) {
 	content, err := readHostProcFile(pid, "io")
 	if err != nil {
 		return nil, err
 	}
 	lines := strings.Split(content, "\n")
-	counters := &process.IOCountersStat{}
+	counters := &IOCountersStat{}
 	for _, line := range lines {
 		if strings.HasPrefix(line, "read_bytes:") {
 			fields := strings.Fields(line)
