@@ -17,7 +17,9 @@ import (
 
 const (
 	updateInterval = 15 * time.Second
-	defaultPort    = "7000"
+	listenAddr     = ":7000"
+	procMount      = "/host/proc"
+	sysMount       = "/host/sys"
 )
 
 var (
@@ -25,32 +27,12 @@ var (
 	metricsMutex  sync.RWMutex
 	pidCache      map[int32]*process.Process
 	pidCacheMutex sync.RWMutex
-	procMount     string
-	sysMount      string
 )
 
-func init() {
-	procMount = os.Getenv("PROC_MOUNT")
-	if procMount == "" {
-		procMount = "/proc"
-	}
-	sysMount = os.Getenv("SYS_MOUNT")
-	if sysMount == "" {
-		sysMount = "/sys"
-	}
-}
-
 func main() {
-	port := os.Getenv("METRICS_PORT")
-	if port == "" {
-		port = defaultPort
-	}
-	listenAddr := ":" + port
-
 	pidCache = make(map[int32]*process.Process)
 	go updateMetrics()
 	http.HandleFunc("/metrics", serveMetrics)
-	log.Printf("Starting metrics server on %s", listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, nil))
 }
 
